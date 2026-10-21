@@ -1,0 +1,23 @@
+flowchart LR
+  subgraph GLOBAL["Global plane (no firm data)"]
+    TS[("Template Store<br/>existing")] -- "outbox: version.changed<br/>(seq per templateId)" --> BUS{{"EventBridge / SNS"}}
+    BUS --> CAT[("Release Catalog<br/>version DAG + head")]
+    CAT --> SUM["Summary Service<br/>diff → change list → LLM → validator"]
+    SUM --> S3[("Summaries (immutable)<br/>S3 Object Lock + DDB")]
+  end
+  subgraph CELL["Regional cell: US | EU | CA (firm data never leaves)"]
+    CAT -. "replicated head + summaries" .-> CC[("Catalog cache")]
+    EM["Engagement Mgmt<br/>existing"] -- "outbox: Created / Applied / Declined / Opened<br/>(state-carrying, per-engagement rev)" --> Q[["SQS"]]
+    Q --> IDX[("Engagement Template Index<br/>DynamoDB, trust=VERIFIED|UNVERIFIED")]
+    CC --> FO["Fan-out worker"]
+    IDX <--> FO
+    FO -- "only UNVERIFIED rows<br/>~60s, capped, AIMD" --> EM
+    FO --> PEND[("Pending view<br/>fenced by catalogSeq")]
+    PEND --> API["Pending API / BFF"]
+    CC --> API
+    API --> UI(["Firm users"])
+    UI -- "accept / decline (engagementId, targetVersion, summaryId)" --> EM
+    AUD["Drift auditor<br/>0.1%/day probes"] --> EM
+    AUD --> IDX
+  end
+  BUS -- "fan-out to each cell" --> FO
