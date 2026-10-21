@@ -19,7 +19,6 @@ buildNumber.properties
 .idea/
 *.iml
 out/
-
 # Java
 *.class
 
@@ -27,6 +26,7 @@ out/
 .env
 .env.*
 !.env.example
-
 # Logs
 *.log
+# Local setup and diagnostic scripts
+/SetupScripts/
