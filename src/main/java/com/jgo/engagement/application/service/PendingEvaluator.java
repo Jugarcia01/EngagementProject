@@ -31,17 +31,17 @@ public final class PendingEvaluator {
             return Evaluation.notPending("TARGET_VERSION_DECLINED");
         }
 
-        boolean appliedIsAncestor = releaseCatalog.isAncestor(
-                state.templateId(), applied, currentHeadVersion);
-        if (!appliedIsAncestor) {
-            return Evaluation.notPending("CROSS_BRANCH_OR_UNKNOWN_ANCESTRY");
-        }
-
         // A target that is an ancestor of the applied version is not a forward update.
         boolean headIsAncestorOfApplied = releaseCatalog.isAncestor(
                 state.templateId(), currentHeadVersion, applied);
         if (headIsAncestorOfApplied) {
             return Evaluation.notPending("TARGET_IS_ANCESTOR_OF_APPLIED");
+        }
+
+        boolean appliedIsAncestor = releaseCatalog.isAncestor(
+                state.templateId(), applied, currentHeadVersion);
+        if (!appliedIsAncestor) {
+            return Evaluation.notPending("CROSS_BRANCH_OR_UNKNOWN_ANCESTRY");
         }
 
         return Evaluation.pending(applied, currentHeadVersion);
