@@ -1,5 +1,6 @@
 package com.jgo.engagement.application.service;
 
+import com.jgo.engagement.adapter.outbound.local.InMemoryPendingMarkerStore;
 import com.jgo.engagement.application.port.out.DeadLetterPort;
 import com.jgo.engagement.application.port.out.EngagementIndexPort;
 import com.jgo.engagement.application.port.out.EngagementStateProbePort;

@@ -1,0 +1,31 @@
+# Dev-profile fan-out configuration.
+# Same in-memory stub adapters as 'local', tuned closer to a realistic workload.
+# Activate with: mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+
+fanout:
+  max-concurrency: 8
+  max-attempts: 4
+  max-throttle-attempts: 10
+  base-backoff: 100ms
+  max-backoff: 1s
+  lease-duration: 5m
+  page-size: 100
+
+  local:
+    seed:
+      enabled: true
+      firms: [dev-firm-a, dev-firm-b]
+      engagements-per-firm: 10
+      template-id: T-DEV
+      applied-version: v3
+
+    probe:
+      latency: 20ms         # simulate downstream load latency
+      failure-mode: none
+      failure-budget: 0
+
+    smoke:
+      enabled: true
+      change-id: dev-smoke-001
+      head-version: v5
+      catalog-seq: 100

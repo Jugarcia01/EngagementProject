@@ -1,4 +1,4 @@
-package com.jgo.engagement.application.service;
+package com.jgo.engagement.adapter.outbound.local;
 
 import com.jgo.engagement.application.port.out.PendingMarkerPort;
 import com.jgo.engagement.domain.model.EngagementRef;
@@ -8,7 +8,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-final class InMemoryPendingMarkerStore implements PendingMarkerPort {
+/**
+ * Local-profile in-memory {@link PendingMarkerPort}. Honors the full fencing contract:
+ * deletes retain a per-row sequence fence so a late, older event cannot resurrect a
+ * stale pending row.
+ */
+public final class InMemoryPendingMarkerStore implements PendingMarkerPort {
     private final Map<Key, PendingMarker> rows = new ConcurrentHashMap<>();
     private final Map<Key, Long> fences = new ConcurrentHashMap<>();
 
@@ -57,25 +62,26 @@ final class InMemoryPendingMarkerStore implements PendingMarkerPort {
         return WriteResult.APPLIED;
     }
 
-    synchronized void preload(PendingMarker marker) {
+    /** Test/dev seeding hook: inserts a marker and raises its fence. */
+    public synchronized void preload(PendingMarker marker) {
         Key key = Key.of(marker);
         rows.put(key, marker);
         fences.merge(key, marker.evaluatedAtSeq(), Math::max);
     }
 
-    synchronized PendingMarker get(String firmId, String engagementId, String templateId) {
+    public synchronized PendingMarker get(String firmId, String engagementId, String templateId) {
         return rows.get(new Key(firmId, engagementId, templateId));
     }
 
-    synchronized long fence(String firmId, String engagementId, String templateId) {
+    public synchronized long fence(String firmId, String engagementId, String templateId) {
         return fences.getOrDefault(new Key(firmId, engagementId, templateId), -1L);
     }
 
-    synchronized int size() {
+    public synchronized int size() {
         return rows.size();
     }
 
-    synchronized List<PendingMarker> all() {
+    public synchronized List<PendingMarker> all() {
         return List.copyOf(rows.values());
     }
 

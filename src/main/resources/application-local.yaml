@@ -1,0 +1,35 @@
+# Local-profile fan-out configuration.
+# Active only with: mvnw spring-boot:run -Dspring-boot.run.profiles=local
+# The local/* section tunes the in-memory stub adapters; it must never be shipped to a real environment.
+
+fanout:
+  # Fan-out tuning (maps onto Settings)
+  max-concurrency: 4
+  max-attempts: 4
+  max-throttle-attempts: 10
+  base-backoff: 25ms
+  max-backoff: 250ms
+  lease-duration: 2m
+  page-size: 50
+
+  local:
+    # Synthetic engagements seeded into the in-memory index on startup
+    seed:
+      enabled: true
+      firms: [local-firm]
+      engagements-per-firm: 3
+      template-id: T-LOCAL
+      applied-version: v3
+
+    # Simulated downstream probe behavior
+    probe:
+      latency: 0ms
+      failure-mode: none      # none | transient | permanent | throttled
+      failure-budget: 0       # number of probes that fail before succeeding
+
+    # One-shot smoke run that exercises all six stub adapters on startup
+    smoke:
+      enabled: true
+      change-id: local-smoke-001
+      head-version: v5
+      catalog-seq: 100

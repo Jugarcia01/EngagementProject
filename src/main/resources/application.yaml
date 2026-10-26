@@ -1,0 +1,8 @@
+# Base application configuration.
+# 'local' is the default profile for development runs; it loads the in-memory stub
+# adapters from application-local.yaml. Override for real environments with:
+#   SPRING_PROFILES_ACTIVE=prod  (env var, wins over this file)
+#   -Dspring.profiles.active=prod / --spring.profiles.active=prod
+spring:
+  profiles:
+    active: local

@@ -1,4 +1,4 @@
-package com.jgo.engagement.application.service;
+package com.jgo.engagement.adapter.outbound.local;
 
 import com.jgo.engagement.application.port.out.PendingMarkerPort.WriteResult;
 import com.jgo.engagement.domain.model.EngagementRef;
@@ -78,6 +78,35 @@ class InMemoryPendingMarkerStoreTest {
         assertNull(store.get("f1", "e1", TEMPLATE));
         assertEquals(5, store.fence("f1", "e1", TEMPLATE));
         assertEquals(WriteResult.STALE_IGNORED, store.upsertIfNewer(marker(engagement, 5)));
+    }
+
+    @Test
+    void upsertIfNotOlderAllowsEqualSequences() {
+        EngagementRef engagement = new EngagementRef("f1", "e1");
+
+        assertEquals(WriteResult.APPLIED, store.upsertIfNotOlder(marker(engagement, 5)));
+        assertEquals(WriteResult.APPLIED, store.upsertIfNotOlder(marker(engagement, 5)));
+        assertEquals(WriteResult.STALE_IGNORED, store.upsertIfNotOlder(marker(engagement, 4)));
+    }
+
+    @Test
+    void clearIfNotOlderAllowsEqualSequences() {
+        EngagementRef engagement = new EngagementRef("f1", "e1");
+        store.preload(marker(engagement, 5));
+
+        assertEquals(WriteResult.STALE_IGNORED, store.clearIfNotOlder(engagement, TEMPLATE, 4));
+        assertEquals(WriteResult.APPLIED, store.clearIfNotOlder(engagement, TEMPLATE, 5));
+        assertNull(store.get("f1", "e1", TEMPLATE));
+        assertEquals(5, store.fence("f1", "e1", TEMPLATE));
+    }
+
+    @Test
+    void allReturnsSnapshotOfRows() {
+        store.preload(marker(new EngagementRef("f1", "e1"), 1));
+        store.preload(marker(new EngagementRef("f1", "e2"), 1));
+
+        assertEquals(2, store.all().size());
+        assertEquals(2, store.size());
     }
 
     private static PendingMarker marker(EngagementRef engagement, long seq) {

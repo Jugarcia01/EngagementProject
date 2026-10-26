@@ -11,11 +11,12 @@ import com.jgo.engagement.application.port.out.ReleaseCatalogPort;
 import com.jgo.engagement.application.port.out.WorkLeasePort;
 import com.jgo.engagement.application.service.FanOutPorts;
 import com.jgo.engagement.application.service.ProcessHeadChangeService;
-import com.jgo.engagement.application.service.Settings;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(FanOutProperties.class)
 public class FanOutConfiguration {
 
     @Bean
@@ -31,7 +32,8 @@ public class FanOutConfiguration {
             EngagementStateProbePort engagementStateProbePort,
             DeadLetterPort deadLetterPort,
             ReleaseCatalogPort releaseCatalogPort,
-            FanOutMetricsPort fanOutMetricsPort) {
+            FanOutMetricsPort fanOutMetricsPort,
+            FanOutProperties fanOutProperties) {
         return new ProcessHeadChangeService(
                 new FanOutPorts(
                         engagementIndexPort,
@@ -41,6 +43,6 @@ public class FanOutConfiguration {
                         deadLetterPort,
                         releaseCatalogPort,
                         fanOutMetricsPort),
-                Settings.defaults());
+                fanOutProperties.toSettings());
     }
 }
