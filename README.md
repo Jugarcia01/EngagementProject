@@ -1,6 +1,6 @@
 # Template head-change fan-out worker (Part 2)
 
-Java 21, zero dependencies. `bash run-tests.sh` compiles and runs 10 tests (concurrency, idempotency, retries, fairness, etc.).
+Java 21, Maven with Spring Boot. Compiles and runs 10 tests (concurrency, idempotency, retries, fairness, etc.).
 
 ## What it does
 On "head of template T is now vN (seq S)" (publish **or** withdrawal), bring every engagement's pending-update marker up to date in one region.
