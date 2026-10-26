@@ -22,5 +22,8 @@ class TemplateStateTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new TemplateState("template-1", "v4", Set.of(),
                         TemplateState.VerificationStatus.VERIFIED, -1));
+        assertThrows(IllegalArgumentException.class, () ->
+                new TemplateState(" ", "v4", Set.of(),
+                        TemplateState.VerificationStatus.VERIFIED, 1));
     }
 }

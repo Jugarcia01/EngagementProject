@@ -57,6 +57,7 @@ class PendingEvaluatorTest {
 
         assertFalse(evaluator.evaluate(state, "v4").pending());
         assertFalse(evaluator.evaluate(state, null).pending());
+        assertFalse(evaluator.evaluate(state, " ").pending());
     }
 
     @Test

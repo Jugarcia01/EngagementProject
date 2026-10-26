@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -44,12 +45,14 @@ class ProcessHeadChangeServiceTest {
     void concurrencyCapAndCompleteness() {
         FakeEngagementIndex index = new FakeEngagementIndex()
                 .add("f1", 20, "a", false)
-                .add("f2", 10, "b", false);
-        FakeProbe probe = new FakeProbe(30);
+                .add("f2", 10, "b", false)
+                .add("f-empty", 0, "e", false);
+        FakeProbe probe = new FakeProbe(60);
         InMemoryPendingMarkerStore pending = new InMemoryPendingMarkerStore();
         RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+        LinearReleaseCatalog catalog = new LinearReleaseCatalog().nullSummaryFor("v3", "v5");
 
-        service(index, pending, new FakeWorkLeasePort(), probe, new FakeDeadLetterPort(), metrics, settings(4))
+        service(index, pending, new FakeWorkLeasePort(), probe, new FakeDeadLetterPort(), metrics, settings(4), catalog)
                 .process(V5);
 
         assertTrue(probe.peak() <= 4, "peak downstream concurrency " + probe.peak() + " exceeded cap 4");
@@ -93,7 +96,8 @@ class ProcessHeadChangeServiceTest {
         FakeDeadLetterPort dlq = new FakeDeadLetterPort();
         RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
 
-        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(2))
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics,
+                settings(2, Duration.ofMillis(30), Duration.ofMillis(60)))
                 .process(V5);
 
         assertEquals(5, metrics.completed());
@@ -108,6 +112,7 @@ class ProcessHeadChangeServiceTest {
         FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 6, "a", false);
         FakeProbe probe = new FakeProbe(5);
         probe.permanent.add("a-1");
+        probe.appliedOverride.put("a-0", "v5");
         FakeDeadLetterPort dlq = new FakeDeadLetterPort();
         RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
 
@@ -131,7 +136,8 @@ class ProcessHeadChangeServiceTest {
         FakeDeadLetterPort dlq = new FakeDeadLetterPort();
         RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
 
-        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(8))
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics,
+                settings(8, Duration.ofMillis(20), Duration.ofMillis(60)))
                 .process(V5);
 
         assertEquals(30, metrics.completed());
@@ -228,6 +234,166 @@ class ProcessHeadChangeServiceTest {
         assertEquals(0, index.verifiedWrites());
     }
 
+    @Test
+    void transientProbeExhaustionIsDeadLettered() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 5, "a", false);
+        FakeProbe probe = new FakeProbe(1);
+        probe.transientLeft.put("a-0", new AtomicInteger(10));
+        FakeDeadLetterPort dlq = new FakeDeadLetterPort();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(2))
+                .process(V5);
+
+        assertEquals(4, metrics.completed());
+        assertEquals(1, metrics.deadLettered());
+        assertEquals(4, probe.callsFor("a-0"));
+        assertEquals(3, metrics.retried());
+        assertEquals(1, dlq.size());
+        assertEquals("TRANSIENT_EXHAUSTED", dlq.entries().get(0).failureCode());
+        assertEquals("a-0", dlq.entries().get(0).engagement().engagementId());
+    }
+
+    @Test
+    void throttledProbeExhaustionIsDeadLettered() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 1, "a", false);
+        FakeProbe probe = new FakeProbe(1);
+        probe.throttleBudget.set(10);
+        FakeDeadLetterPort dlq = new FakeDeadLetterPort();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(2))
+                .process(V5);
+
+        assertEquals(0, metrics.completed());
+        assertEquals(1, metrics.deadLettered());
+        assertEquals(10, probe.callsFor("a-0"));
+        assertEquals(9, metrics.retried());
+        assertEquals(1, dlq.size());
+        assertEquals("THROTTLED_EXHAUSTED", dlq.entries().get(0).failureCode());
+    }
+
+    @Test
+    void runtimeFailuresAreRetriedThenDeadLettered() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 4, "a", false);
+        FakeProbe probe = new FakeProbe(1);
+        probe.runtimeLeft.put("a-2", new AtomicInteger(10));
+        FakeDeadLetterPort dlq = new FakeDeadLetterPort();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(2))
+                .process(V5);
+
+        assertEquals(3, metrics.completed());
+        assertEquals(1, metrics.deadLettered());
+        assertEquals(4, probe.callsFor("a-2"));
+        assertEquals(3, metrics.retried());
+        assertEquals(1, dlq.size());
+        assertEquals("TRANSIENT_EXHAUSTED", dlq.entries().get(0).failureCode());
+        assertEquals("a-2", dlq.entries().get(0).engagement().engagementId());
+    }
+
+    @Test
+    void metricsFailureDuringRetryYieldsUnexpectedDeadLetter() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 3, "a", false);
+        FakeProbe probe = new FakeProbe(1);
+        probe.transientLeft.put("a-1", new AtomicInteger(1));
+        FakeDeadLetterPort dlq = new FakeDeadLetterPort();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+        metrics.failOnRetried.set(true);
+
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(2))
+                .process(V5);
+
+        assertEquals(2, metrics.completed());
+        assertEquals(1, metrics.deadLettered());
+        assertEquals(1, dlq.size());
+        assertEquals("UNEXPECTED", dlq.entries().get(0).failureCode());
+        assertEquals("a-1", dlq.entries().get(0).engagement().engagementId());
+    }
+
+    @Test
+    void deadLetterPublishFailureIsSwallowed() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 3, "a", false);
+        FakeProbe probe = new FakeProbe(1);
+        probe.permanent.add("a-1");
+        FakeDeadLetterPort dlq = new FakeDeadLetterPort();
+        dlq.failOnPublish = true;
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, new InMemoryPendingMarkerStore(), new FakeWorkLeasePort(), probe, dlq, metrics, settings(2))
+                .process(V5);
+
+        assertEquals(2, metrics.completed());
+        assertEquals(1, metrics.deadLettered());
+        assertEquals(0, dlq.size());
+    }
+
+    @Test
+    void blankPageTokenStopsPaging() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 5, "a", true);
+        index.overrideToken = " ";
+        InMemoryPendingMarkerStore pending = new InMemoryPendingMarkerStore();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, pending, new FakeWorkLeasePort(), new FakeProbe(1), new FakeDeadLetterPort(), metrics, settings(4))
+                .process(V5);
+
+        assertEquals(5, pending.size());
+        assertEquals(5, metrics.fastApplied());
+        assertEquals(0, metrics.completed());
+    }
+
+    @Test
+    void duplicatePageTokenStopsPaging() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 5, "a", true);
+        index.overrideToken = "0";
+        InMemoryPendingMarkerStore pending = new InMemoryPendingMarkerStore();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, pending, new FakeWorkLeasePort(), new FakeProbe(1), new FakeDeadLetterPort(), metrics, settings(4))
+                .process(V5);
+
+        assertEquals(5, pending.size());
+        assertEquals(10, metrics.fastApplied() + metrics.fastStale());
+        assertEquals(0, metrics.completed());
+    }
+
+    @Test
+    void interruptBeforeProcessingReturnsEarly() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 3, "a", false);
+        InMemoryPendingMarkerStore pending = new InMemoryPendingMarkerStore();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        Thread.currentThread().interrupt();
+        service(index, pending, new FakeWorkLeasePort(), new FakeProbe(1), new FakeDeadLetterPort(), metrics, settings(2))
+                .process(V5);
+
+        assertTrue(Thread.interrupted(), "interrupt flag must remain set through process()");
+        assertEquals(0, pending.size());
+        assertEquals(0, metrics.probeStarted());
+        assertEquals(0, metrics.completed());
+    }
+
+    @Test
+    void interruptDuringSlowPhaseReleasesInFlightClaims() {
+        FakeEngagementIndex index = new FakeEngagementIndex().add("f1", 2, "a", false);
+        FakeProbe probe = new FakeProbe(250);
+        probe.interruptTarget = Thread.currentThread();
+        FakeWorkLeasePort leases = new FakeWorkLeasePort();
+        leases.failRelease = true;
+        FakeDeadLetterPort dlq = new FakeDeadLetterPort();
+        RecordingFanOutMetrics metrics = new RecordingFanOutMetrics();
+
+        service(index, new InMemoryPendingMarkerStore(), leases, probe, dlq, metrics, settings(2))
+                .process(V5);
+
+        assertTrue(metrics.probeStarted() >= 1);
+        assertEquals(0, metrics.completed());
+        assertEquals(0, dlq.size());
+        Thread.interrupted();
+    }
+
     private static ProcessHeadChangeService service(
             FakeEngagementIndex index,
             InMemoryPendingMarkerStore pending,
@@ -236,18 +402,34 @@ class ProcessHeadChangeServiceTest {
             FakeDeadLetterPort deadLetters,
             RecordingFanOutMetrics metrics,
             Settings settings) {
+        return service(index, pending, leases, probe, deadLetters, metrics, settings, new LinearReleaseCatalog());
+    }
+
+    private static ProcessHeadChangeService service(
+            FakeEngagementIndex index,
+            InMemoryPendingMarkerStore pending,
+            FakeWorkLeasePort leases,
+            FakeProbe probe,
+            FakeDeadLetterPort deadLetters,
+            RecordingFanOutMetrics metrics,
+            Settings settings,
+            LinearReleaseCatalog catalog) {
         return new ProcessHeadChangeService(
                 index, pending, leases, probe, deadLetters,
-                new LinearReleaseCatalog(), metrics, settings);
+                catalog, metrics, settings);
     }
 
     private static Settings settings(int maxConcurrency) {
+        return settings(maxConcurrency, Duration.ZERO, Duration.ZERO);
+    }
+
+    private static Settings settings(int maxConcurrency, Duration baseBackoff, Duration maxBackoff) {
         return new Settings(
                 maxConcurrency,
                 4,
                 10,
-                Duration.ZERO,
-                Duration.ZERO,
+                baseBackoff,
+                maxBackoff,
                 Duration.ofMinutes(5),
                 500);
     }
@@ -256,6 +438,7 @@ class ProcessHeadChangeServiceTest {
         private final Map<String, List<IdxEntry>> byFirm = new LinkedHashMap<>();
         private final AtomicInteger verifiedWrites = new AtomicInteger();
         private volatile boolean applyVerification = true;
+        volatile String overrideToken;
 
         FakeEngagementIndex add(String firm, int count, String prefix, boolean verified) {
             List<IdxEntry> entries = byFirm.computeIfAbsent(firm, ignored -> new ArrayList<>());
@@ -287,13 +470,13 @@ class ProcessHeadChangeServiceTest {
                 return List.of();
             }
             int to = Math.min(all.size(), from + pageSize);
+            String nextToken = overrideToken != null
+                    ? overrideToken
+                    : (to < all.size() ? String.valueOf(to) : null);
             List<IndexedEngagement> page = new ArrayList<>();
             for (int i = from; i < to; i++) {
                 IdxEntry entry = all.get(i);
-                page.add(new IndexedEngagement(
-                        entry.ref(),
-                        entry.state(),
-                        to < all.size() ? String.valueOf(to) : null));
+                page.add(new IndexedEngagement(entry.ref(), entry.state(), nextToken));
             }
             return page;
         }
@@ -341,8 +524,12 @@ class ProcessHeadChangeServiceTest {
         private final Map<String, AtomicInteger> calls = new ConcurrentHashMap<>();
         private final List<String> order = Collections.synchronizedList(new ArrayList<>());
         final Map<String, AtomicInteger> transientLeft = new ConcurrentHashMap<>();
+        final Map<String, AtomicInteger> runtimeLeft = new ConcurrentHashMap<>();
         final Set<String> permanent = ConcurrentHashMap.newKeySet();
         final AtomicInteger throttleBudget = new AtomicInteger();
+        final Map<String, String> appliedOverride = new ConcurrentHashMap<>();
+        volatile Thread interruptTarget;
+        private final AtomicBoolean interruptOnce = new AtomicBoolean(true);
         private int inFlight;
         private int peak;
 
@@ -360,6 +547,10 @@ class ProcessHeadChangeServiceTest {
                 peak = Math.max(peak, ++inFlight);
             }
             try {
+                Thread target = interruptTarget;
+                if (target != null && interruptOnce.compareAndSet(true, false)) {
+                    target.interrupt();
+                }
                 if (latencyMillis > 0) {
                     try {
                         Thread.sleep(latencyMillis);
@@ -369,11 +560,15 @@ class ProcessHeadChangeServiceTest {
                     }
                 }
                 if (permanent.contains(id)) {
-                    throw new ProbeException(ProbeException.Kind.PERMANENT, "corrupt " + id);
+                    throw new ProbeException(ProbeException.Kind.PERMANENT, null);
                 }
                 int throttles = throttleBudget.getAndUpdate(value -> Math.max(0, value - 1));
                 if (throttles > 0) {
                     throw new ProbeException(ProbeException.Kind.THROTTLED, "429 " + id);
+                }
+                AtomicInteger runtimeFailures = runtimeLeft.get(id);
+                if (runtimeFailures != null && runtimeFailures.getAndUpdate(value -> value > 0 ? value - 1 : 0) > 0) {
+                    throw new RuntimeException("runtime boom " + id);
                 }
                 AtomicInteger left = transientLeft.get(id);
                 if (left != null && left.getAndUpdate(value -> value > 0 ? value - 1 : 0) > 0) {
@@ -381,7 +576,7 @@ class ProcessHeadChangeServiceTest {
                 }
                 return new TemplateState(
                         TEMPLATE,
-                        "v3",
+                        appliedOverride.getOrDefault(id, "v3"),
                         Set.of(),
                         TemplateState.VerificationStatus.VERIFIED,
                         2);
@@ -419,6 +614,7 @@ class ProcessHeadChangeServiceTest {
     static final class FakeWorkLeasePort implements WorkLeasePort {
         private final Set<String> completed = ConcurrentHashMap.newKeySet();
         private final Set<String> leases = ConcurrentHashMap.newKeySet();
+        volatile boolean failRelease;
 
         @Override
         public synchronized LeaseResult tryAcquire(String changeId, String engagementId, Duration leaseDuration) {
@@ -441,6 +637,9 @@ class ProcessHeadChangeServiceTest {
 
         @Override
         public synchronized void releaseForRetry(String changeId, String engagementId) {
+            if (failRelease) {
+                throw new RuntimeException("lease release failed");
+            }
             leases.remove(key(changeId, engagementId));
         }
 
@@ -453,9 +652,13 @@ class ProcessHeadChangeServiceTest {
         record Entry(HeadChange change, EngagementRef engagement, String failureCode, String safeMessage) {}
 
         private final List<Entry> entries = Collections.synchronizedList(new ArrayList<>());
+        volatile boolean failOnPublish;
 
         @Override
         public void publish(HeadChange change, EngagementRef engagement, String failureCode, String safeMessage) {
+            if (failOnPublish) {
+                throw new RuntimeException("dead letter sink down");
+            }
             entries.add(new Entry(change, engagement, failureCode, safeMessage));
         }
 
@@ -479,6 +682,7 @@ class ProcessHeadChangeServiceTest {
         private final AtomicInteger retried = new AtomicInteger();
         private final AtomicInteger deadLettered = new AtomicInteger();
         private final AtomicInteger skippedClaimed = new AtomicInteger();
+        final AtomicBoolean failOnRetried = new AtomicBoolean();
 
         @Override
         public void recordFastApplied() {
@@ -507,6 +711,9 @@ class ProcessHeadChangeServiceTest {
 
         @Override
         public void recordRetried() {
+            if (failOnRetried.get()) {
+                throw new RuntimeException("metrics sink down");
+            }
             retried.incrementAndGet();
         }
 
@@ -555,6 +762,7 @@ class ProcessHeadChangeServiceTest {
 
     static final class LinearReleaseCatalog implements ReleaseCatalogPort {
         private final Map<String, List<String>> parents = new HashMap<>();
+        private final Set<String> nullSummaryPairs = ConcurrentHashMap.newKeySet();
 
         LinearReleaseCatalog() {
             for (int i = 2; i <= 7; i++) {
@@ -590,7 +798,20 @@ class ProcessHeadChangeServiceTest {
 
         @Override
         public Optional<String> findSummaryId(String templateId, String fromVersion, String toVersion) {
-            return Optional.empty();
+            return Optional.of("");
+        }
+
+        @Override
+        public String resolveSummaryId(String templateId, String fromVersion, String toVersion) {
+            if (nullSummaryPairs.contains(fromVersion + "->" + toVersion)) {
+                return null;
+            }
+            return ReleaseCatalogPort.super.resolveSummaryId(templateId, fromVersion, toVersion);
+        }
+
+        LinearReleaseCatalog nullSummaryFor(String fromVersion, String toVersion) {
+            nullSummaryPairs.add(fromVersion + "->" + toVersion);
+            return this;
         }
     }
 }

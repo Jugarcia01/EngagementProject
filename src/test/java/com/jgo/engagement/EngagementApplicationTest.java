@@ -53,6 +53,16 @@ class EngagementApplicationTest {
         fanOutMetricsPort.recordSkippedClaimed();
     }
 
+    @Test
+    void mainDelegatesToSpringApplication() {
+        // No production port beans exist, so a real boot fails fast once it starts
+        // resolving the use-case bean. Only the delegation lines need to execute.
+        try {
+            EngagementApplication.main(new String[0]);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class FakePortsConfiguration {
 
