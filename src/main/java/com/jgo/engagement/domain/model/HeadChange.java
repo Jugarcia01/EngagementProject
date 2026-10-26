@@ -13,8 +13,8 @@ public record HeadChange(
         long catalogSeq) {
 
     public HeadChange {
-        changeId = requireText(changeId, "changeId");
-        templateId = requireText(templateId, "templateId");
+        requireText(changeId, "changeId");
+        requireText(templateId, "templateId");
         if (headVersion != null && headVersion.isBlank()) {
             throw new IllegalArgumentException("headVersion must be null or non-blank");
         }
@@ -23,11 +23,10 @@ public record HeadChange(
         }
     }
 
-    private static String requireText(String value, String name) {
+    private static void requireText(String value, String name) {
         Objects.requireNonNull(value, name + " must not be null");
         if (value.isBlank()) {
             throw new IllegalArgumentException(name + " must not be blank");
         }
-        return value;
     }
 }

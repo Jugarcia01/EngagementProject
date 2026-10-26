@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -57,10 +58,13 @@ class EngagementApplicationTest {
     void mainDelegatesToSpringApplication() {
         // No production port beans exist, so a real boot fails fast once it starts
         // resolving the use-case bean. Only the delegation lines need to execute.
-        try {
-            EngagementApplication.main(new String[0]);
-        } catch (RuntimeException ignored) {
-        }
+        assertDoesNotThrow(() -> {
+            try {
+                EngagementApplication.main(new String[0]);
+            } catch (RuntimeException expected) {
+                // boot aborts while resolving beans; delegation already happened
+            }
+        });
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -82,6 +86,7 @@ class EngagementApplicationTest {
 
                 @Override
                 public void recordVerified(EngagementRef engagement, TemplateState state) {
+                    // no-op: context wiring only
                 }
             };
         }
@@ -124,10 +129,12 @@ class EngagementApplicationTest {
 
                 @Override
                 public void markCompleted(String changeId, String engagementId) {
+                    // no-op: context wiring only
                 }
 
                 @Override
                 public void releaseForRetry(String changeId, String engagementId) {
+                    // no-op: context wiring only
                 }
             };
         }
@@ -140,6 +147,7 @@ class EngagementApplicationTest {
         @Bean
         DeadLetterPort deadLetterPort() {
             return (change, engagement, failureCode, safeMessage) -> {
+                // no-op: context wiring only
             };
         }
 

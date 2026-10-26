@@ -9,6 +9,7 @@ import com.jgo.engagement.application.port.out.FanOutMetricsPort;
 import com.jgo.engagement.application.port.out.PendingMarkerPort;
 import com.jgo.engagement.application.port.out.ReleaseCatalogPort;
 import com.jgo.engagement.application.port.out.WorkLeasePort;
+import com.jgo.engagement.application.service.FanOutPorts;
 import com.jgo.engagement.application.service.ProcessHeadChangeService;
 import com.jgo.engagement.application.service.Settings;
 import org.springframework.context.annotation.Bean;
@@ -32,13 +33,14 @@ public class FanOutConfiguration {
             ReleaseCatalogPort releaseCatalogPort,
             FanOutMetricsPort fanOutMetricsPort) {
         return new ProcessHeadChangeService(
-                engagementIndexPort,
-                pendingMarkerPort,
-                workLeasePort,
-                engagementStateProbePort,
-                deadLetterPort,
-                releaseCatalogPort,
-                fanOutMetricsPort,
+                new FanOutPorts(
+                        engagementIndexPort,
+                        pendingMarkerPort,
+                        workLeasePort,
+                        engagementStateProbePort,
+                        deadLetterPort,
+                        releaseCatalogPort,
+                        fanOutMetricsPort),
                 Settings.defaults());
     }
 }

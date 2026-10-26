@@ -26,9 +26,9 @@ public record Settings(
         if (pageSize < 1) {
             throw new IllegalArgumentException("pageSize must be >= 1");
         }
-        baseBackoff = Objects.requireNonNull(baseBackoff, "baseBackoff");
-        maxBackoff = Objects.requireNonNull(maxBackoff, "maxBackoff");
-        leaseDuration = Objects.requireNonNull(leaseDuration, "leaseDuration");
+        Objects.requireNonNull(baseBackoff, "baseBackoff");
+        Objects.requireNonNull(maxBackoff, "maxBackoff");
+        Objects.requireNonNull(leaseDuration, "leaseDuration");
         if (baseBackoff.isNegative()) {
             throw new IllegalArgumentException("baseBackoff must be >= 0");
         }

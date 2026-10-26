@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -415,8 +416,8 @@ class ProcessHeadChangeServiceTest {
             Settings settings,
             LinearReleaseCatalog catalog) {
         return new ProcessHeadChangeService(
-                index, pending, leases, probe, deadLetters,
-                catalog, metrics, settings);
+                new FanOutPorts(index, pending, leases, probe, deadLetters, catalog, metrics),
+                settings);
     }
 
     private static Settings settings(int maxConcurrency) {
@@ -552,11 +553,9 @@ class ProcessHeadChangeServiceTest {
                     target.interrupt();
                 }
                 if (latencyMillis > 0) {
-                    try {
-                        Thread.sleep(latencyMillis);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new ProbeException(ProbeException.Kind.TRANSIENT, "interrupted", e);
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(latencyMillis));
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new ProbeException(ProbeException.Kind.TRANSIENT, "interrupted");
                     }
                 }
                 if (permanent.contains(id)) {

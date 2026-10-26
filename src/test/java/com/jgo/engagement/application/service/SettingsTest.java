@@ -9,6 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class SettingsTest {
 
+    private static final Duration ONE_MINUTE = Duration.ofMinutes(1);
+    private static final Duration NEGATIVE_ONE_MILLI = Duration.ofMillis(-1);
+
     @Test
     void defaultsMatchApprovedAssumptions() {
         Settings settings = Settings.defaults();
@@ -25,21 +28,21 @@ class SettingsTest {
     @Test
     void rejectsInvalidLimits() {
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(0, 4, 10, Duration.ZERO, Duration.ZERO, Duration.ofMinutes(1), 1));
+                new Settings(0, 4, 10, Duration.ZERO, Duration.ZERO, ONE_MINUTE, 1));
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(1, 0, 10, Duration.ZERO, Duration.ZERO, Duration.ofMinutes(1), 1));
+                new Settings(1, 0, 10, Duration.ZERO, Duration.ZERO, ONE_MINUTE, 1));
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(1, 1, 0, Duration.ZERO, Duration.ZERO, Duration.ofMinutes(1), 1));
+                new Settings(1, 1, 0, Duration.ZERO, Duration.ZERO, ONE_MINUTE, 1));
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(1, 1, 1, Duration.ZERO, Duration.ZERO, Duration.ofMinutes(1), 0));
+                new Settings(1, 1, 1, Duration.ZERO, Duration.ZERO, ONE_MINUTE, 0));
     }
 
     @Test
     void rejectsNullDurations() {
         assertThrows(NullPointerException.class, () ->
-                new Settings(1, 1, 1, null, Duration.ZERO, Duration.ofMinutes(1), 1));
+                new Settings(1, 1, 1, null, Duration.ZERO, ONE_MINUTE, 1));
         assertThrows(NullPointerException.class, () ->
-                new Settings(1, 1, 1, Duration.ZERO, null, Duration.ofMinutes(1), 1));
+                new Settings(1, 1, 1, Duration.ZERO, null, ONE_MINUTE, 1));
         assertThrows(NullPointerException.class, () ->
                 new Settings(1, 1, 1, Duration.ZERO, Duration.ZERO, null, 1));
     }
@@ -47,14 +50,12 @@ class SettingsTest {
     @Test
     void rejectsNegativeDurationsAndNonPositiveLease() {
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(1, 1, 1, Duration.ofMillis(-1), Duration.ZERO,
-                        Duration.ofMinutes(1), 1));
+                new Settings(1, 1, 1, NEGATIVE_ONE_MILLI, Duration.ZERO, ONE_MINUTE, 1));
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(1, 1, 1, Duration.ZERO, Duration.ofMillis(-1),
-                        Duration.ofMinutes(1), 1));
+                new Settings(1, 1, 1, Duration.ZERO, NEGATIVE_ONE_MILLI, ONE_MINUTE, 1));
         assertThrows(IllegalArgumentException.class, () ->
                 new Settings(1, 1, 1, Duration.ZERO, Duration.ZERO, Duration.ZERO, 1));
         assertThrows(IllegalArgumentException.class, () ->
-                new Settings(1, 1, 1, Duration.ZERO, Duration.ZERO, Duration.ofMillis(-1), 1));
+                new Settings(1, 1, 1, Duration.ZERO, Duration.ZERO, NEGATIVE_ONE_MILLI, 1));
     }
 }

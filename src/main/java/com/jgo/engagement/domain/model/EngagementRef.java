@@ -5,15 +5,14 @@ import java.util.Objects;
 /** Stable reference to an engagement within its regional firm boundary. */
 public record EngagementRef(String firmId, String engagementId) {
     public EngagementRef {
-        firmId = requireText(firmId, "firmId");
-        engagementId = requireText(engagementId, "engagementId");
+        requireText(firmId, "firmId");
+        requireText(engagementId, "engagementId");
     }
 
-    private static String requireText(String value, String name) {
+    private static void requireText(String value, String name) {
         Objects.requireNonNull(value, name + " must not be null");
         if (value.isBlank()) {
             throw new IllegalArgumentException(name + " must not be blank");
         }
-        return value;
     }
 }

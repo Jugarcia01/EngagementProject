@@ -15,21 +15,20 @@ public record TemplateState(
         long revision) {
 
     public TemplateState {
-        templateId = requireText(templateId, "templateId");
-        appliedVersion = requireText(appliedVersion, "appliedVersion");
+        requireText(templateId, "templateId");
+        requireText(appliedVersion, "appliedVersion");
         declinedVersions = Set.copyOf(Objects.requireNonNull(declinedVersions, "declinedVersions"));
-        verificationStatus = Objects.requireNonNull(verificationStatus, "verificationStatus");
+        Objects.requireNonNull(verificationStatus, "verificationStatus");
         if (revision < 0) {
             throw new IllegalArgumentException("revision must be >= 0");
         }
     }
 
-    private static String requireText(String value, String name) {
+    private static void requireText(String value, String name) {
         Objects.requireNonNull(value, name + " must not be null");
         if (value.isBlank()) {
             throw new IllegalArgumentException(name + " must not be blank");
         }
-        return value;
     }
 
     public enum VerificationStatus {

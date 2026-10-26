@@ -19,11 +19,12 @@ class TemplateStateTest {
 
     @Test
     void rejectsNegativeRevision() {
+        Set<String> noDeclines = Set.of();
         assertThrows(IllegalArgumentException.class, () ->
-                new TemplateState("template-1", "v4", Set.of(),
+                new TemplateState("template-1", "v4", noDeclines,
                         TemplateState.VerificationStatus.VERIFIED, -1));
         assertThrows(IllegalArgumentException.class, () ->
-                new TemplateState(" ", "v4", Set.of(),
+                new TemplateState(" ", "v4", noDeclines,
                         TemplateState.VerificationStatus.VERIFIED, 1));
     }
 }

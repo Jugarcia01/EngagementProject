@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase {
     private static final Logger LOG = LoggerFactory.getLogger(ProcessHeadChangeService.class);
+    private static final String AFTER = " after ";
 
     private final EngagementIndexPort index;
     private final PendingMarkerPort pendingMarkers;
@@ -57,24 +58,17 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
     private final Settings settings;
     private final PendingEvaluator evaluator;
 
-    public ProcessHeadChangeService(
-            EngagementIndexPort index,
-            PendingMarkerPort pendingMarkers,
-            WorkLeasePort leases,
-            EngagementStateProbePort probes,
-            DeadLetterPort deadLetters,
-            ReleaseCatalogPort releaseCatalog,
-            FanOutMetricsPort metrics,
-            Settings settings) {
-        this.index = Objects.requireNonNull(index, "index");
-        this.pendingMarkers = Objects.requireNonNull(pendingMarkers, "pendingMarkers");
-        this.leases = Objects.requireNonNull(leases, "leases");
-        this.probes = Objects.requireNonNull(probes, "probes");
-        this.deadLetters = Objects.requireNonNull(deadLetters, "deadLetters");
-        this.releaseCatalog = Objects.requireNonNull(releaseCatalog, "releaseCatalog");
-        this.metrics = Objects.requireNonNull(metrics, "metrics");
+    public ProcessHeadChangeService(FanOutPorts ports, Settings settings) {
+        Objects.requireNonNull(ports, "ports");
+        this.index = ports.index();
+        this.pendingMarkers = ports.pendingMarkers();
+        this.leases = ports.leases();
+        this.probes = ports.probes();
+        this.deadLetters = ports.deadLetters();
+        this.releaseCatalog = ports.releaseCatalog();
+        this.metrics = ports.metrics();
         this.settings = Objects.requireNonNull(settings, "settings");
-        this.evaluator = new PendingEvaluator(releaseCatalog);
+        this.evaluator = new PendingEvaluator(ports.releaseCatalog());
     }
 
     @Override
@@ -92,45 +86,60 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
 
     private Map<String, Deque<Attempt>> fastPhase(HeadChange change) {
         Map<String, Deque<Attempt>> slow = new LinkedHashMap<>();
-
         for (String firm : index.firmsWithEngagements(change.templateId())) {
-            String cursor = null;
-            Set<String> seenTokens = new HashSet<>();
+            collectFirmPageAttempts(change, firm, slow);
+        }
+        return slow;
+    }
 
-            while (!Thread.currentThread().isInterrupted()) {
-                List<EngagementIndexPort.IndexedEngagement> page =
-                        index.findByTemplate(firm, change.templateId(), cursor, settings.pageSize());
-                if (page == null || page.isEmpty()) {
-                    break;
-                }
+    private void collectFirmPageAttempts(
+            HeadChange change, String firm, Map<String, Deque<Attempt>> slow) {
+        String cursor = null;
+        Set<String> seenTokens = new HashSet<>();
 
-                for (EngagementIndexPort.IndexedEngagement entry : page) {
-                    if (entry.state().verificationStatus() == TemplateState.VerificationStatus.VERIFIED) {
-                        PendingMarkerPort.WriteResult result =
-                                evaluateAndWrite(change, entry.engagement(), entry.state());
-                        if (result == PendingMarkerPort.WriteResult.APPLIED) {
-                            metrics.recordFastApplied();
-                        } else {
-                            metrics.recordFastStale();
-                        }
-                    } else {
-                        String entryFirm = entry.engagement().firmId();
-                        slow.computeIfAbsent(entryFirm, ignored -> new ArrayDeque<>())
-                                .addLast(new Attempt(entry.engagement(), entry.state(), 0, 0));
-                    }
-                }
-
-                cursor = page.get(page.size() - 1).nextPageToken();
-                if (cursor == null || cursor.isBlank()) {
-                    break;
-                }
-                if (!seenTokens.add(cursor)) {
-                    break;
-                }
+        while (!Thread.currentThread().isInterrupted()) {
+            List<EngagementIndexPort.IndexedEngagement> page =
+                    index.findByTemplate(firm, change.templateId(), cursor, settings.pageSize());
+            if (page == null || page.isEmpty()) {
+                return;
+            }
+            partitionPage(change, page, slow);
+            cursor = nextToken(page, seenTokens);
+            if (cursor == null) {
+                return;
             }
         }
+    }
 
-        return slow;
+    private String nextToken(
+            List<EngagementIndexPort.IndexedEngagement> page, Set<String> seenTokens) {
+        String cursor = page.getLast().nextPageToken();
+        if (cursor == null || cursor.isBlank() || !seenTokens.add(cursor)) {
+            return null;
+        }
+        return cursor;
+    }
+
+    private void partitionPage(
+            HeadChange change,
+            List<EngagementIndexPort.IndexedEngagement> page,
+            Map<String, Deque<Attempt>> slow) {
+        for (EngagementIndexPort.IndexedEngagement entry : page) {
+            if (entry.state().verificationStatus() == TemplateState.VerificationStatus.VERIFIED) {
+                recordFastWrite(evaluateAndWrite(change, entry.engagement(), entry.state()));
+            } else {
+                slow.computeIfAbsent(entry.engagement().firmId(), ignored -> new ArrayDeque<>())
+                        .addLast(new Attempt(entry.engagement(), entry.state(), 0, 0));
+            }
+        }
+    }
+
+    private void recordFastWrite(PendingMarkerPort.WriteResult result) {
+        if (result == PendingMarkerPort.WriteResult.APPLIED) {
+            metrics.recordFastApplied();
+        } else {
+            metrics.recordFastStale();
+        }
     }
 
     private PendingMarkerPort.WriteResult evaluateAndWrite(
@@ -166,71 +175,74 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
             return;
         }
 
-        Map<String, Deque<Attempt>> queues = new LinkedHashMap<>();
-        for (Map.Entry<String, Deque<Attempt>> entry : slowQueues.entrySet()) {
-            if (!entry.getValue().isEmpty()) {
-                queues.put(entry.getKey(), new ArrayDeque<>(entry.getValue()));
-            }
-        }
-
-        ArrayDeque<String> ring = new ArrayDeque<>();
-        Set<String> inRing = new HashSet<>();
-        for (String firm : queues.keySet()) {
-            ring.addLast(firm);
-            inRing.add(firm);
-        }
-
-        DelayQueue<RetryTask> retries = new DelayQueue<>();
-        BlockingQueue<AttemptResult> completions = new LinkedBlockingQueue<>();
-        Set<String> claimed = ConcurrentHashMap.newKeySet();
+        SlowDispatch dispatch = SlowDispatch.from(slowQueues);
         ExecutorService executor = Executors.newFixedThreadPool(settings.maxConcurrency());
+        try {
+            dispatchLoop(change, dispatch, remaining, executor);
+        } finally {
+            executor.shutdownNow();
+            releaseAllClaimed(change.changeId(), dispatch.claimed());
+            executor.close();
+        }
+    }
 
+    private void dispatchLoop(
+            HeadChange change, SlowDispatch dispatch, int remaining, ExecutorService executor) {
         int inFlight = 0;
         try {
-            while (remaining > 0) {
-                if (Thread.currentThread().isInterrupted()) {
-                    break;
-                }
-
-                drainDueRetries(retries, queues, ring, inRing);
-
-                while (inFlight < settings.maxConcurrency()) {
-                    Attempt next = pollNext(ring, queues, inRing);
-                    if (next == null) {
-                        break;
-                    }
-                    inFlight++;
-                    submitAttempt(change, next, completions, claimed, executor);
-                }
-
+            while (remaining > 0 && !Thread.currentThread().isInterrupted()) {
+                drainDueRetries(dispatch.retries(), dispatch.queues(), dispatch.ring(), dispatch.inRing());
+                inFlight = launchAvailable(change, dispatch, inFlight, executor);
                 if (inFlight == 0) {
-                    if (retries.isEmpty()) {
-                        LOG.error("fanout.stalled changeId={} remaining={}", change.changeId(), remaining);
-                        break;
-                    }
-                    RetryTask due = retries.poll(50, TimeUnit.MILLISECONDS);
-                    if (due != null) {
-                        enqueueRetry(due, queues, ring, inRing);
+                    if (!awaitDueRetry(change, dispatch, remaining)) {
+                        return;
                     }
                     continue;
                 }
-
-                AttemptResult result = completions.poll(50, TimeUnit.MILLISECONDS);
+                AttemptResult result = dispatch.completions().poll(50, TimeUnit.MILLISECONDS);
                 if (result != null) {
                     inFlight--;
-                    if (result.nextAttempt() == null) {
-                        remaining--;
-                    } else {
-                        retries.add(new RetryTask(result.nextAttempt(), result.readyAtNanos()));
-                    }
+                    remaining = settleResult(dispatch, result, remaining);
                 }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        } finally {
-            executor.shutdownNow();
-            releaseAllClaimed(change.changeId(), claimed);
         }
+    }
+
+    private int launchAvailable(
+            HeadChange change, SlowDispatch dispatch, int inFlight, ExecutorService executor) {
+        int active = inFlight;
+        while (active < settings.maxConcurrency()) {
+            Attempt next = pollNext(dispatch.ring(), dispatch.queues(), dispatch.inRing());
+            if (next == null) {
+                return active;
+            }
+            active++;
+            submitAttempt(change, next, dispatch.completions(), dispatch.claimed(), executor);
+        }
+        return active;
+    }
+
+    private boolean awaitDueRetry(HeadChange change, SlowDispatch dispatch, int remaining)
+            throws InterruptedException {
+        if (dispatch.retries().isEmpty()) {
+            LOG.error("fanout.stalled changeId={} remaining={}", change.changeId(), remaining);
+            return false;
+        }
+        RetryTask due = dispatch.retries().poll(50, TimeUnit.MILLISECONDS);
+        if (due != null) {
+            enqueueRetry(due, dispatch.queues(), dispatch.ring(), dispatch.inRing());
+        }
+        return true;
+    }
+
+    private int settleResult(SlowDispatch dispatch, AttemptResult result, int remaining) {
+        if (result.nextAttempt() == null) {
+            return remaining - 1;
+        }
+        dispatch.retries().add(new RetryTask(result.nextAttempt(), result.readyAtNanos()));
+        return remaining;
     }
 
     private void submitAttempt(
@@ -280,9 +292,7 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
             metrics.recordCompleted();
             return AttemptResult.terminal();
         } catch (ProbeException e) {
-            if (acquired) {
-                releaseClaim(change.changeId(), engagementId, claimed);
-            }
+            releaseClaim(change.changeId(), engagementId, claimed);
             return handleProbeFailure(change, attempt, e);
         } catch (RuntimeException e) {
             if (acquired) {
@@ -307,7 +317,7 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
                         change,
                         engagement,
                         "TRANSIENT_EXHAUSTED",
-                        safeMessage(failure) + " after " + failures + " attempts");
+                        safeMessage(failure) + AFTER + failures + " attempts");
                 return AttemptResult.terminal();
             }
             return scheduleRetry(change, attempt, failures, attempt.throttles(), "TRANSIENT", failures, failure);
@@ -319,7 +329,7 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
                     change,
                     engagement,
                     "THROTTLED_EXHAUSTED",
-                    safeMessage(failure) + " after " + throttles + " throttles");
+                    safeMessage(failure) + AFTER + throttles + " throttles");
             return AttemptResult.terminal();
         }
         return scheduleRetry(change, attempt, attempt.failures(), throttles, "THROTTLED", throttles, failure);
@@ -332,7 +342,7 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
                     change,
                     attempt.engagement(),
                     "TRANSIENT_EXHAUSTED",
-                    "runtime: " + safeMessage(failure) + " after " + failures + " attempts");
+                    "runtime: " + safeMessage(failure) + AFTER + failures + " attempts");
             return AttemptResult.terminal();
         }
         return scheduleRetry(change, attempt, failures, attempt.throttles(), "TRANSIENT", failures, failure);
@@ -349,15 +359,17 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
         Duration delay = backoff(attemptNumber);
         long readyAtNanos = System.nanoTime() + delay.toNanos();
         metrics.recordRetried();
-        LOG.info(
-                "fanout.retry changeId={} firmId={} engagementId={} kind={} attempt={} delayMs={} reason={}",
-                change.changeId(),
-                attempt.engagement().firmId(),
-                attempt.engagement().engagementId(),
-                kind,
-                attemptNumber,
-                delay.toMillis(),
-                safeMessage(failure));
+        if (LOG.isInfoEnabled()) {
+            LOG.info(
+                    "fanout.retry changeId={} firmId={} engagementId={} kind={} attempt={} delayMs={} reason={}",
+                    change.changeId(),
+                    attempt.engagement().firmId(),
+                    attempt.engagement().engagementId(),
+                    kind,
+                    attemptNumber,
+                    delay.toMillis(),
+                    safeMessage(failure));
+        }
 
         Attempt next = new Attempt(attempt.engagement(), attempt.indexedState(), failures, throttles);
         return new AttemptResult(next, readyAtNanos);
@@ -474,6 +486,31 @@ public final class ProcessHeadChangeService implements ProcessHeadChangeUseCase 
     private static String safeMessage(Throwable failure) {
         String message = failure.getMessage();
         return message == null || message.isBlank() ? failure.getClass().getSimpleName() : message;
+    }
+
+    private record SlowDispatch(
+            Map<String, Deque<Attempt>> queues,
+            ArrayDeque<String> ring,
+            Set<String> inRing,
+            DelayQueue<RetryTask> retries,
+            BlockingQueue<AttemptResult> completions,
+            Set<String> claimed) {
+
+        static SlowDispatch from(Map<String, Deque<Attempt>> slowQueues) {
+            Map<String, Deque<Attempt>> queues = new LinkedHashMap<>();
+            for (Map.Entry<String, Deque<Attempt>> entry : slowQueues.entrySet()) {
+                if (!entry.getValue().isEmpty()) {
+                    queues.put(entry.getKey(), new ArrayDeque<>(entry.getValue()));
+                }
+            }
+            return new SlowDispatch(
+                    queues,
+                    new ArrayDeque<>(queues.keySet()),
+                    new HashSet<>(queues.keySet()),
+                    new DelayQueue<>(),
+                    new LinkedBlockingQueue<>(),
+                    ConcurrentHashMap.newKeySet());
+        }
     }
 
     private record Attempt(

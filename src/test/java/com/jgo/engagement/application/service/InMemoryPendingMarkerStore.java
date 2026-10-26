@@ -1,7 +1,6 @@
 package com.jgo.engagement.application.service;
 
 import com.jgo.engagement.application.port.out.PendingMarkerPort;
-import com.jgo.engagement.application.port.out.PendingMarkerPort.WriteResult;
 import com.jgo.engagement.domain.model.EngagementRef;
 import com.jgo.engagement.domain.model.PendingMarker;
 
@@ -61,7 +60,7 @@ final class InMemoryPendingMarkerStore implements PendingMarkerPort {
     synchronized void preload(PendingMarker marker) {
         Key key = Key.of(marker);
         rows.put(key, marker);
-        fences.merge(key, marker.evaluatedAtSeq(), (left, right) -> Math.max(left, right));
+        fences.merge(key, marker.evaluatedAtSeq(), Math::max);
     }
 
     synchronized PendingMarker get(String firmId, String engagementId, String templateId) {
