@@ -173,12 +173,6 @@ class ProcessHeadChangeServiceTest {
     }
 
     @Test
-    @Disabled("supersession deferred: cost optimization; correctness via catalogSeq fencing")
-    void supersededChangeSkipsDownstream() {
-        fail("supersession is deferred by D11; no ChangeRegistry port exists in the MVP");
-    }
-
-    @Test
     void duplicateWorkersNeverDoubleProbe() throws Exception {
         FakeEngagementIndex index = new FakeEngagementIndex()
                 .add("f1", 25, "a", false)
