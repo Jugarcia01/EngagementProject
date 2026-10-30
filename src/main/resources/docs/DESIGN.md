@@ -2,14 +2,15 @@
 
 **Scope:** show firms, in near real time, which engagement files have a pending template update and a human-readable summary of what changes. Applying the update is out of scope.
 
-## 0. Decisions in brief
+## Decisions in brief
 1. **Never read engagements to answer "what is pending".** The ~1 min rehydration is a hard constraint. Build a small, region-local **Engagement Template Index** (engagement → templateId, applied version, declined versions, trust) fed by events, and evaluate pending-ness against a global **Release Catalog**. The slow load is used only for backfill and drift audits.
 2. **"Pending" is a derived, recomputable function**, not accumulated state, so lost or duplicated events heal.
 3. **Summaries are per (fromVersion → toVersion) pair, not per engagement.** Template content is not firm-specific, so one summary serves every firm. This is what makes LLM cost negligible.
 4. **Two planes:** a global plane that only ever sees template data, and regional cells (US / EU / CA) that hold everything engagement-derived.
 
 ## 1. Architecture and data ownership
-See `diagrams/architecture.mmd`.
+See `architecture.mmd`.
+![Architecture diagram](architecture.png)
 
 | Data | Owner / system of record | Where | Notes |
 |---|---|---|---|
